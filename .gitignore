@@ -1,0 +1,29 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+env.bak/
+venv.bak/
+
+# Environment variables
+.env
+
+# Logs and outputs
+logs/
+output/
+
+# Models
+models/
+
+# Auth tokens
+youtube_token.pickle
+
+# IDE / OS files
+.vscode/
+.idea/
+.DS_Store
+*.swp
