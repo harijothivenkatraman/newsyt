@@ -171,6 +171,44 @@ def main():
     except Exception as e:
         console.print(f"[yellow]⚠ YAKE test failed: {e} — tag extraction will fall back to word-frequency.[/]")
 
+    # ── Piper TTS Setup ───────────────────────────────────────────────────────
+    console.print("\n[bold]Step 3.4/4:[/] Downloading Piper TTS binary and weights…")
+    try:
+        import urllib.request
+        import zipfile
+        
+        # Download piper.exe binary for Windows
+        piper_url = "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_windows_amd64.zip"
+        piper_zip = "piper.zip"
+        piper_bin_dir = "bin"
+        piper_exe = os.path.join(piper_bin_dir, "piper", "piper.exe")
+        
+        if not os.path.exists(piper_exe):
+            console.print(f"[dim]Downloading piper.exe binary (~20 MB)...[/]")
+            urllib.request.urlretrieve(piper_url, piper_zip)
+            with zipfile.ZipFile(piper_zip, 'r') as zip_ref:
+                zip_ref.extractall(piper_bin_dir)
+            os.remove(piper_zip)
+
+        # Download Voice Models
+        base_url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium"
+        model_name = "en_US-lessac-medium"
+        
+        onnx_dest = os.path.join(CACHE_DIR, f"{model_name}.onnx")
+        json_dest = os.path.join(CACHE_DIR, f"{model_name}.onnx.json")
+        
+        if not os.path.exists(onnx_dest):
+            console.print(f"[dim]Downloading {model_name}.onnx (~63 MB) to {CACHE_DIR}...[/]")
+            urllib.request.urlretrieve(f"{base_url}/{model_name}.onnx", onnx_dest)
+            
+        if not os.path.exists(json_dest):
+            console.print(f"[dim]Downloading {model_name}.onnx.json to {CACHE_DIR}...[/]")
+            urllib.request.urlretrieve(f"{base_url}/{model_name}.onnx.json", json_dest)
+            
+        console.print("[green]✓[/] Piper binary and models downloaded successfully!")
+    except Exception as e:
+        console.print(f"[red]✗ Failed to download Piper: {e}[/]")
+
     # ── Kokoro-82M TTS Setup ──────────────────────────────────────────────────
     console.print("\n[bold]Step 3.5/4:[/] Downloading Kokoro-82M TTS weights…")
     try:

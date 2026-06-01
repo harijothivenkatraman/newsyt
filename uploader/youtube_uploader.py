@@ -60,6 +60,7 @@ class UploadResult:
     video_id: str = ""
     video_url: str = ""
     error: str = ""
+    quota_exceeded: bool = False      # True when HTTP 429 daily quota hit
     metadata: dict = field(default_factory=dict)
 
 
@@ -209,6 +210,57 @@ class YouTubeUploader:
             logger.warning(f"YouTube dedup check failed: {e}")
         return False, ""
 
+    def get_top_performing_seo_context(self) -> str:
+        """Fetch the top 5 most viewed videos from this channel and extract their SEO patterns."""
+        if not self._service:
+            if not self.authenticate():
+                return ""
+                
+        try:
+            logger.info("Fetching top-performing videos from YouTube API for SEO context...")
+            resp = self._service.search().list(
+                part="snippet",
+                forMine=True,
+                type="video",
+                order="viewCount",
+                maxResults=5,
+            ).execute()
+            
+            items = resp.get("items", [])
+            if not items:
+                return ""
+                
+            context_lines = []
+            context_lines.append("Here are the actual titles of the top 5 most-viewed videos on this channel:")
+            
+            video_ids = [item["id"]["videoId"] for item in items]
+            vid_resp = self._service.videos().list(
+                part="snippet,statistics",
+                id=",".join(video_ids)
+            ).execute()
+            
+            all_tags = []
+            for v in vid_resp.get("items", []):
+                title = v["snippet"]["title"]
+                tags = v["snippet"].get("tags", [])
+                views = v["statistics"].get("viewCount", "0")
+                context_lines.append(f"- \"{title}\" ({views} views)")
+                all_tags.extend(tags)
+                
+            from collections import Counter
+            top_tags = [tag for tag, _ in Counter(all_tags).most_common(15)]
+            
+            if top_tags:
+                context_lines.append("\nHere are the most successful tags used across these top videos:")
+                context_lines.append(", ".join(top_tags))
+                context_lines.append("\nPlease format the newly generated titles and tags to closely mimic these successful patterns.")
+                
+            return "\n".join(context_lines)
+            
+        except Exception as e:
+            logger.warning(f"Failed to fetch SEO context from YouTube API: {e}")
+            return ""
+
     # ── Upload ────────────────────────────────────────────────────────────────
 
     def upload(
@@ -287,6 +339,12 @@ class YouTubeUploader:
                 logger.warning(f"  Connection reset. Retrying in {wait}s (attempt {retry_count}/{max_retries})...")
                 time.sleep(wait)
             except googleapiclient.errors.HttpError as e:
+                error_str = str(e)
+                if "429" in error_str or "rateLimitExceeded" in error_str or "Quota exceeded" in error_str:
+                    logger.warning(f"YouTube upload quota exceeded (429). Saving to retry queue.")
+                    self._save_retry_queue(video_path, video_content, privacy, is_short=False)
+                    return UploadResult(success=False, quota_exceeded=True,
+                                       error="Quota exceeded — saved to retry queue (resets at midnight PT).")
                 logger.error(f"Upload HTTP error: {e}")
                 return UploadResult(success=False, error=str(e))
 
@@ -403,6 +461,12 @@ class YouTubeUploader:
                 logger.warning(f"  Short connection reset. Retrying in {wait}s...")
                 time.sleep(wait)
             except googleapiclient.errors.HttpError as e:
+                error_str = str(e)
+                if "429" in error_str or "rateLimitExceeded" in error_str or "Quota exceeded" in error_str:
+                    logger.warning(f"YouTube Short quota exceeded (429). Saving to retry queue.")
+                    self._save_retry_queue(video_path, video_content, privacy, is_short=True)
+                    return UploadResult(success=False, quota_exceeded=True,
+                                       error="Quota exceeded — saved to retry queue (resets at midnight PT).")
                 logger.error(f"Short upload HTTP error: {e}")
                 return UploadResult(success=False, error=str(e))
 
@@ -416,6 +480,326 @@ class YouTubeUploader:
             video_url=video_url,
             metadata={"title": shorts_title, "category": video_content.category, "type": "short"},
         )
+
+    def upload_short_scheduled(
+        self,
+        video_path: str,
+        video_content,
+        publish_at_utc,     # datetime (UTC, timezone-aware) — when to auto-publish
+        privacy_until_then: str = "private",
+    ) -> "UploadResult":
+        """
+        Upload a Short as private and schedule it to auto-publish at publish_at_utc.
+
+        The YouTube API requires:
+          - status.privacyStatus = "private" (or "unlisted")
+          - status.publishAt     = ISO 8601 UTC datetime string
+
+        This is used for daily and weekly bundle Shorts scheduled at peak IST times.
+        The channel must be a standard account (not a Brand Account) for scheduling to work.
+        """
+        if not GOOGLE_LIBS:
+            return self._simulate_upload(video_content)
+
+        if not self._service:
+            if not self.authenticate():
+                return UploadResult(success=False, error="Authentication failed")
+
+        category_id = CATEGORY_MAP.get(
+            getattr(video_content, "category", "news").lower(), "25"
+        )
+
+        base_title = (getattr(video_content, "title", "News Bundle") or "News Bundle").strip()
+        shorts_title = base_title if len(base_title) <= 90 else base_title[:87] + "..."
+        shorts_title = f"{shorts_title} #Shorts"
+
+        source_block = ""
+        if getattr(video_content, "source_url", ""):
+            source_block = f"\n\n🔗 More news: {video_content.source_url}"
+
+        shorts_description = (
+            f"{getattr(video_content, 'description', '')[:1200]}"
+            f"{source_block}"
+            "\n\n#Shorts #NewsRoundup #TopNews #IndiaNews #BreakingNews"
+        )
+
+        tags = list(getattr(video_content, "tags", [])[:25]) + [
+            "Shorts", "NewsRoundup", "TopNews", "IndiaNews", "BreakingNews",
+        ]
+        tags = list(dict.fromkeys(tags))[:30]
+
+        # Format publishAt as RFC3339 UTC
+        from datetime import timezone as _tz
+        if publish_at_utc.tzinfo is None:
+            publish_at_utc = publish_at_utc.replace(tzinfo=_tz.utc)
+        publish_at_str = publish_at_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        body = {
+            "snippet": {
+                "title":       shorts_title[:100],
+                "description": shorts_description[:5000],
+                "tags":        tags,
+                "categoryId":  category_id,
+                "defaultLanguage": "en",
+                "defaultAudioLanguage": "en",
+            },
+            "status": {
+                "privacyStatus":          privacy_until_then,
+                "publishAt":              publish_at_str,
+                "selfDeclaredMadeForKids": False,
+                "embeddable":              True,
+                "publicStatsViewable":     True,
+            },
+        }
+
+        media = MediaFileUpload(
+            video_path,
+            chunksize=self.CHUNK_SIZE,
+            resumable=True,
+            mimetype="video/mp4",
+        )
+
+        logger.info(f"Uploading scheduled Short: {shorts_title[:60]} → publish at {publish_at_str}")
+        request = self._service.videos().insert(
+            part="snippet,status",
+            body=body,
+            media_body=media,
+        )
+
+        response = None
+        retry_count = 0
+        max_retries = 5
+        while response is None:
+            try:
+                status, response = request.next_chunk()
+                if status:
+                    pct = int(status.progress() * 100)
+                    logger.info(f"  Scheduled Short upload progress: {pct}%")
+                retry_count = 0
+            except ConnectionResetError as e:
+                retry_count += 1
+                if retry_count > max_retries:
+                    return UploadResult(success=False, error=f"Upload failed after retries: {e}")
+                wait = 2 ** retry_count
+                logger.warning(f"  Connection reset. Retrying in {wait}s...")
+                time.sleep(wait)
+            except googleapiclient.errors.HttpError as e:
+                error_str = str(e)
+                if "429" in error_str or "rateLimitExceeded" in error_str or "Quota exceeded" in error_str:
+                    logger.warning("Scheduled Short quota exceeded — saving to retry queue.")
+                    self._save_retry_queue(video_path, video_content, privacy_until_then, is_short=True)
+                    return UploadResult(
+                        success=False, quota_exceeded=True,
+                        error="Quota exceeded — saved to retry queue.",
+                    )
+                logger.error(f"Scheduled Short HTTP error: {e}")
+                return UploadResult(success=False, error=str(e))
+
+        video_id  = response.get("id", "")
+        video_url = f"https://www.youtube.com/shorts/{video_id}"
+        logger.success(f"Scheduled Short uploaded! {video_url} → publishes at {publish_at_str}")
+
+        return UploadResult(
+            success=True,
+            video_id=video_id,
+            video_url=video_url,
+            metadata={
+                "title": shorts_title,
+                "category": getattr(video_content, "category", "news"),
+                "type": "scheduled_short",
+                "publish_at": publish_at_str,
+            },
+        )
+
+    @staticmethod
+    def get_next_peak_ist(
+        peak_times_ist: list[tuple[int, int]] = None,
+    ):
+        """
+        Returns the next upcoming peak time in UTC, based on IST peak hours.
+
+        Args:
+            peak_times_ist: list of (hour, minute) tuples in IST (UTC+5:30).
+                            Default: [(8, 0), (18, 0)] for 8 AM and 6 PM IST.
+
+        Returns:
+            A timezone-aware datetime in UTC representing the next peak slot.
+        """
+        from datetime import datetime, timezone, timedelta
+
+        IST_OFFSET = timedelta(hours=5, minutes=30)
+        now_utc    = datetime.now(timezone.utc)
+        now_ist    = now_utc + IST_OFFSET
+
+        if peak_times_ist is None:
+            peak_times_ist = [(8, 0), (18, 0)]
+
+        candidates = []
+        for h, m in peak_times_ist:
+            # Today's slot in IST
+            candidate_ist = now_ist.replace(hour=h, minute=m, second=0, microsecond=0)
+            if candidate_ist <= now_ist:
+                # Slot already passed today — move to tomorrow
+                candidate_ist += timedelta(days=1)
+            # Convert to UTC
+            candidate_utc = candidate_ist - IST_OFFSET
+            candidates.append(candidate_utc)
+
+        # Return the earliest upcoming slot
+        return min(candidates)
+
+    @staticmethod
+    def get_next_weekly_peak_ist(
+        weekday: int = 6,          # 6 = Sunday (Mon=0 ... Sun=6)
+        hour_ist: int = 10,
+        minute_ist: int = 0,
+    ):
+        """
+        Returns the next Sunday (or configured weekday) 10:00 AM IST as UTC datetime.
+        """
+        from datetime import datetime, timezone, timedelta
+
+        IST_OFFSET = timedelta(hours=5, minutes=30)
+        now_utc = datetime.now(timezone.utc)
+        now_ist = now_utc + IST_OFFSET
+
+        days_ahead = (weekday - now_ist.weekday()) % 7
+        if days_ahead == 0:
+            # Today is the target weekday — check if time has passed
+            target_ist = now_ist.replace(hour=hour_ist, minute=minute_ist, second=0, microsecond=0)
+            if target_ist <= now_ist:
+                days_ahead = 7
+            # else days_ahead stays 0
+
+        target_ist = (now_ist + timedelta(days=days_ahead)).replace(
+            hour=hour_ist, minute=minute_ist, second=0, microsecond=0
+        )
+        return target_ist - IST_OFFSET  # UTC
+
+
+    # ── Retry queue ───────────────────────────────────────────────────────────
+
+    _RETRY_FILE = Path("./logs/upload_retry.jsonl")
+
+    def _save_retry_queue(self, video_path: str, video_content, privacy: str, is_short: bool):
+        """
+        Persist a failed-due-to-quota upload so it can be retried tomorrow.
+        The video file is NOT deleted — it must stay on disk until the retry succeeds.
+        """
+        import json
+        from datetime import datetime
+        entry = {
+            "queued_at": datetime.now().isoformat(),
+            "video_path": str(video_path),
+            "is_short": is_short,
+            "privacy": privacy,
+            "article_id": getattr(video_content, "article_id", ""),
+            "title": getattr(video_content, "title", ""),
+            "description": getattr(video_content, "description", "")[:2000],
+            "tags": getattr(video_content, "tags", [])[:30],
+            "category": getattr(video_content, "category", "news"),
+            "source_url": getattr(video_content, "source_url", ""),
+            "source_name": getattr(video_content, "source_name", ""),
+            "status": "pending",
+        }
+        try:
+            self._RETRY_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._RETRY_FILE, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            logger.info(f"Saved to retry queue: {entry['title'][:60]}")
+        except Exception as ex:
+            logger.error(f"Failed to save retry queue: {ex}")
+
+    def retry_pending_uploads(self) -> list[UploadResult]:
+        """
+        Re-attempt all uploads saved to the retry queue.
+        Call this at startup or on a daily schedule after midnight PT (when quota resets).
+        Returns list of results.
+        """
+        import json
+        if not self._RETRY_FILE.exists():
+            return []
+
+        lines = self._RETRY_FILE.read_text(encoding="utf-8").splitlines()
+        entries = []
+        for line in lines:
+            line = line.strip()
+            if line:
+                try:
+                    entries.append(json.loads(line))
+                except Exception:
+                    pass
+
+        pending = [e for e in entries if e.get("status") == "pending"]
+        if not pending:
+            logger.info("Retry queue: nothing pending.")
+            return []
+
+        logger.info(f"Retry queue: attempting {len(pending)} pending upload(s)...")
+        results = []
+
+        for entry in pending:
+            video_path = entry.get("video_path", "")
+            if not video_path or not os.path.exists(video_path):
+                logger.warning(f"Retry: file missing — {video_path}")
+                entry["status"] = "missing"
+                results.append(UploadResult(success=False, error=f"File missing: {video_path}"))
+                continue
+
+            # Reconstruct a minimal VideoContent-like object
+            class _VC:
+                pass
+            vc = _VC()
+            vc.article_id   = entry.get("article_id", "")
+            vc.title        = entry.get("title", "")
+            vc.description  = entry.get("description", "")
+            vc.tags         = entry.get("tags", [])
+            vc.category     = entry.get("category", "news")
+            vc.source_url   = entry.get("source_url", "")
+            vc.source_name  = entry.get("source_name", "")
+            vc.short_script = ""
+            vc.script       = ""
+            vc.script_segments = []
+            vc.thumbnail_headline = ""
+            vc.thumbnail_subtext  = ""
+            vc.estimated_duration = 180
+
+            privacy = entry.get("privacy", "public")
+            is_short = entry.get("is_short", False)
+
+            if is_short:
+                result = self.upload_short(video_path, vc, privacy)
+            else:
+                result = self.upload(video_path, vc, privacy=privacy)
+
+            if result.success:
+                entry["status"] = "done"
+                entry["video_url"] = result.video_url
+                # Clean up the video file now that it's uploaded
+                try:
+                    os.remove(video_path)
+                except Exception:
+                    pass
+                logger.success(f"Retry succeeded: {result.video_url}")
+            elif result.quota_exceeded:
+                logger.warning("Retry: still quota-limited — will try again tomorrow.")
+                # Leave status as 'pending'
+            else:
+                entry["status"] = "failed"
+                entry["error"] = result.error
+                logger.error(f"Retry failed: {result.error}")
+
+            results.append(result)
+
+        # Rewrite the retry file with updated statuses
+        try:
+            with open(self._RETRY_FILE, "w", encoding="utf-8") as f:
+                for e in entries:
+                    f.write(json.dumps(e, ensure_ascii=False) + "\n")
+        except Exception as ex:
+            logger.error(f"Failed to update retry queue: {ex}")
+
+        return results
 
     # ── Simulation (no creds) ─────────────────────────────────────────────────
 

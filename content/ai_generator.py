@@ -25,7 +25,8 @@ from loguru import logger
 class VideoContent:
     article_id: str
     title: str                      # YouTube video title (≤ 100 chars)
-    script: str                     # Full narration script
+    script: str                     # Full narration script (~300-500 words)
+    short_script: str               # Short ~60-word script for Shorts
     script_segments: list[dict]     # [{text, duration_hint, style}]
     description: str                # YouTube description (≤ 5000 chars)
     tags: list[str]                 # YouTube tags
@@ -102,6 +103,8 @@ Generate a JSON object with EXACTLY these fields:
   "title": "YouTube video title — max 90 chars, SEO-optimized, no clickbait, professional news style. Include year/date context if relevant.",
   
   "script": "Full narration script 300-500 words. Professional TV news anchor tone. Start with a strong hook. Use short punchy sentences. Structure: Hook → Context → Details → Implications → Closing. No emojis.",
+
+  "short_script": "EXACTLY 95–110 words. This is spoken aloud at normal pace = 40–50 seconds. Structure: 1) Hook sentence (attention-grabbing, 10 words max). 2) Important details covering who, what, why it matters in depth (75-85 words total). 3) CTA: 'Like and subscribe for more news updates.' Fast, direct, no filler words. No emojis.",
   
   "script_segments": [
     {{
@@ -127,7 +130,7 @@ Generate a JSON object with EXACTLY these fields:
   
   "thumbnail_subtext": "One line subtext under headline, max 40 chars.",
   
-  "estimated_duration": 180  // estimated video length in seconds (120-300 typical)
+  "estimated_duration": 50  // target individual short duration in seconds (45-55)
 }}
 
 Rules:
@@ -137,6 +140,10 @@ Rules:
 - Description hashtags at the END only
 - thumbnail_headline should create urgency/curiosity WITHOUT being misleading
 """
+        
+        seo_context = os.environ.get("CHANNEL_SEO_CONTEXT", "")
+        if seo_context:
+            prompt += f"\n\n--- DYNAMIC SEO CONTEXT ---\n{seo_context}\n---------------------------\n"
 
         response = self.client.messages.create(
             model=self.MODEL,
@@ -155,6 +162,7 @@ Rules:
             article_id=article.id,
             title=data.get("title", article.title)[:100],
             script=data.get("script", ""),
+            short_script=data.get("short_script", data.get("script", "")[:400]),
             script_segments=data.get("script_segments", []),
             description=data.get("description", ""),
             tags=data.get("tags", [])[:30],

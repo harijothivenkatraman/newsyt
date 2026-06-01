@@ -31,6 +31,25 @@ from loguru import logger
 from content.ai_generator import VideoContent  # noqa: F401  (re-export)
 
 
+# News-anchor phrases for variety
+_HOOKS = [
+    "In a major development,",
+    "Breaking news tonight —",
+    "A significant story is emerging —",
+    "We bring you an important update —",
+    "There are major developments tonight —",
+    "In what could be a turning point,",
+    "Here is a story you need to know about —",
+]
+_SIGN_OFFS = [
+    "Stay with us as this story develops. I'm reporting for {channel}, and we'll keep you updated.",
+    "For {channel}, this has been your news update. Stay informed, stay ahead.",
+    "We'll continue to follow this story as more details emerge. This is {channel}.",
+    "For more on this and all the latest news, keep watching {channel}.",
+    "That's the latest on this developing story. Stay tuned to {channel} for live updates.",
+]
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -48,6 +67,15 @@ def _truncate(text: str, max_chars: int) -> str:
     truncated = text[:max_chars]
     last_space = truncated.rfind(" ")
     return truncated[:last_space].rstrip(".,:;") if last_space > 0 else truncated
+
+
+def _similarity_ratio(a: str, b: str) -> float:
+    """Simple word-overlap ratio between two strings (0.0 = different, 1.0 = identical)."""
+    words_a = set(re.sub(r'[^a-z0-9 ]', '', a.lower()).split())
+    words_b = set(re.sub(r'[^a-z0-9 ]', '', b.lower()).split())
+    if not words_a or not words_b:
+        return 0.0
+    return len(words_a & words_b) / max(len(words_a), len(words_b))
 
 
 def _split_into_segments(script: str) -> list[dict]:
@@ -218,22 +246,24 @@ class LocalMLGenerator:
         """Generate full YouTube video content from a NewsArticle."""
         logger.info(f"[LocalML] Generating content for: {article.title[:60]}...")
         try:
-            title       = self._generate_title(article)
-            script      = self._generate_script(article)
-            description = self._generate_description(article, title)
+            title        = self._generate_title(article)
+            script       = self._generate_script(article)
+            short_script = self._generate_short_script(article, script)
+            description  = self._generate_description(article, title)
             thumb_headline, thumb_sub = self._generate_thumbnail_text(article, title)
-            tags        = _extract_tags_yake(
+            tags         = _extract_tags_yake(
                 article.title + " " + article.content[:800],
                 article.source,
                 article.category,
             )
-            segments    = _split_into_segments(script)
-            duration    = self._estimate_duration(script)
+            segments     = _split_into_segments(script)
+            duration     = self._estimate_duration(script)
 
             vc = VideoContent(
                 article_id=article.id,
                 title=title,
                 script=script,
+                short_script=short_script,
                 script_segments=segments,
                 description=description,
                 tags=tags,
@@ -255,62 +285,142 @@ class LocalMLGenerator:
 
     def _generate_script(self, article) -> str:
         """
-        Generate a broadcast-style news narration using multi-pass section prompts.
-
-        flan-t5-base (250 M params) works best with short, focused instructions.
-        Rather than asking it to write 400 words in one shot (which causes repetition
-        and truncation), we call it 5 times — once per script section — then join.
-
-        Sections: Hook → Context → Key Facts → Implications → Closing
+        Build a proper news-anchor narration script directly from article content.
+        Structure: Hook → Who/What → Key Details → Context → Implications → Sign-off
+        Flan-T5 is used to polish individual lines, but the structure comes from
+        the article text itself — this avoids the bland title-repetition problem.
         """
-        content_snippet = article.content[:1500].strip()
-        title           = article.title
-        source          = article.source
-        category        = article.category.capitalize()
+        import random
+        title   = article.title.strip().rstrip('.')
+        content = article.content.strip()
+        source  = article.source
+        channel = os.environ.get("CHANNEL_NAME", "your news channel")
+        category = article.category.capitalize()
 
-        sections = []
+        # ── Extract real sentences from article ───────────────────────────────
+        raw_sentences = re.split(r'(?<=[.!?])\s+', content)
+        good_sentences = [
+            s.strip() for s in raw_sentences
+            if 20 < len(s.strip()) < 250 and not s.strip().startswith('http')
+        ]
 
-        # 1. Hook — one punchy opening sentence
-        hook = self._script_gen.run(
-            f"Write one dramatic opening sentence for an Indian TV news broadcast about: {title}.",
-            max_new_tokens=60,
-        )
-        sections.append(hook)
+        # ── Section 1: Hook (1 sentence) ──────────────────────────────────────
+        hook_prefix = random.choice(_HOOKS)
+        # Try to get a punchy model hook, fallback to rule-based
+        try:
+            model_hook = self._script_gen.run(
+                f"Write ONE short, dramatic news broadcast opening sentence about: {title}. "
+                f"Do not repeat the headline word-for-word. Start strong.",
+                max_new_tokens=50,
+            )
+            # Reject if it just mirrors the title
+            if _similarity_ratio(model_hook, title) > 0.7 or len(model_hook) < 15:
+                hook = f"{hook_prefix} {title}."
+            else:
+                hook = model_hook
+        except Exception:
+            hook = f"{hook_prefix} {title}."
 
-        # 2. Background — 2-3 context sentences
-        ctx = self._script_gen.run(
-            f"Provide 2 sentences of background context for a news report. "
-            f"Topic: {title}. Source: {source}. Category: {category}.",
-            max_new_tokens=100,
-        )
-        sections.append(ctx)
+        # ── Section 2: Who/What (first 1-2 real sentences from article) ───────
+        who_what = ' '.join(good_sentences[:2]) if good_sentences else ''
 
-        # 3. Key Facts — summarize the article body
-        facts = self._script_gen.run(
-            f"Summarize these key facts in 3 clear sentences for a TV news script:\n{content_snippet[:800]}",
-            max_new_tokens=150,
-        )
-        sections.append(facts)
+        # ── Section 3: Key details (next 2-3 sentences) ───────────────────────
+        detail_sents = good_sentences[2:5]
+        details = ' '.join(detail_sents)
 
-        # 4. Implications / Reactions — what does it mean?
-        impl = self._script_gen.run(
-            f"In 2 sentences, explain the implications or reactions to this news: {title}.",
-            max_new_tokens=90,
-        )
-        sections.append(impl)
+        # ── Section 4: More context (next 2 sentences) ────────────────────────
+        context_sents = good_sentences[5:7]
+        context = ' '.join(context_sents)
 
-        # 5. Closing — sign-off
-        closing = self._script_gen.run(
-            f"Write one professional closing sentence for a TV news segment about: {title}. "
-            f"End with 'Stay tuned for more updates.' or similar.",
-            max_new_tokens=50,
-        )
-        sections.append(closing)
+        # ── Section 5: Implications — model generates this ────────────────────
+        try:
+            impl = self._script_gen.run(
+                f"In exactly 2 clear sentences, explain why this matters to the public: {title}. "
+                f"Do not start with 'This' or repeat the headline.",
+                max_new_tokens=80,
+            )
+            if _similarity_ratio(impl, title) > 0.65 or len(impl.split()) < 5:
+                impl = f"This development has drawn significant attention from political and public circles. "\
+                       f"Experts say the situation is being closely monitored by authorities."
+        except Exception:
+            impl = ""
 
-        # Join, deduplicate consecutive identical sentences, clean
-        script = self._join_sections(sections)
+        # ── Section 6: Source attribution ─────────────────────────────────────
+        attribution = f"According to {source}, this report covers the {category} sector and has significant implications."
+
+        # ── Section 7: Sign-off ───────────────────────────────────────────────
+        sign_off = random.choice(_SIGN_OFFS).format(channel=channel)
+
+        # ── Assemble ──────────────────────────────────────────────────────────
+        parts = [hook]
+        if who_what:
+            parts.append(who_what)
+        if details:
+            parts.append(details)
+        if context:
+            parts.append(context)
+        if impl:
+            parts.append(impl)
+        parts.append(attribution)
+        parts.append(sign_off)
+
+        script = self._join_sections(parts)
         logger.debug(f"[LocalML] Script word count: {len(script.split())}")
         return script
+
+    def _generate_short_script(self, article, full_script: str) -> str:
+        """
+        Generate a 95-110 word script for individual Shorts (40-50 seconds).
+        Structure: Hook → Important Details → CTA
+        Target: 2.5 words/sec × 45 sec = ~110 words max, 90 words min.
+        """
+        import random
+        title   = article.title.strip().rstrip('.')
+        channel = os.environ.get("CHANNEL_NAME", "your channel")
+        content = article.content.strip()
+
+        raw_sentences = re.split(r'(?<=[.!?])\s+', content)
+        good_sentences = [
+            s.strip() for s in raw_sentences
+            if 20 < len(s.strip()) < 180 and not s.strip().startswith('http')
+        ]
+
+        # Hook (~10 words)
+        hook = f"{random.choice(_HOOKS)} {title}."
+
+        # Important Details (Extract up to 4 real sentences to get ~85 words)
+        details_parts = []
+        words_count = 0
+        for s in good_sentences:
+            s_len = len(s.split())
+            if words_count + s_len > 90:
+                # Truncate this sentence to fit the remaining budget
+                remaining = 90 - words_count
+                if remaining > 10:
+                    truncated = _truncate(s, remaining * 5)
+                    details_parts.append(truncated)
+                break
+            details_parts.append(s)
+            words_count += s_len
+            
+        details = " ".join(details_parts)
+
+        # CTA (~10 words, fixed)
+        cta = "Like and subscribe for more news updates."
+
+        parts = [p for p in [hook, details, cta] if p]
+        short = _clean(' '.join(parts))
+
+        # Enforce 115 word limit — trim from details if over
+        words = short.split()
+        if len(words) > 115:
+            # simple hard truncate if it exceeds too much
+            short_words = words[:110]
+            short = " ".join(short_words) + "..."
+            short = _clean(short + " " + cta)
+
+        return short
+
 
     def _join_sections(self, sections: list[str]) -> str:
         """Join section outputs, removing obvious repetition between sections."""
@@ -358,23 +468,32 @@ class LocalMLGenerator:
 
     def _generate_title(self, article) -> str:
         """Generate an SEO-optimized YouTube title ≤ 90 chars."""
-        prompt = (
-            f"Write a YouTube video title for an Indian news channel. "
-            f"Requirements: professional news style (like NDTV or Times Now), "
-            f"SEO-optimized, max 90 characters, no clickbait, no emojis, compelling but factual.\n\n"
-            f"News headline: {article.title}\n"
-            f"Source: {article.source}\n"
-            f"Category: {article.category}\n\n"
-            f"YouTube title:"
-        )
-        raw = self._meta_gen.run(prompt, max_new_tokens=40)
-        title = re.sub(r"^(youtube title:?\s*)", "", raw, flags=re.IGNORECASE).strip()
-        title = _truncate(title, 90)
+        title = article.title.strip()
+        source = article.source
+        category = article.category.capitalize()
 
-        # Final fallback: use original headline if model output is garbage
-        if len(title) < 10:
-            title = _truncate(article.title, 90)
-        return title
+        # Try model
+        try:
+            prompt = (
+                f"Rewrite this news headline as a YouTube video title for an Indian news channel. "
+                f"Keep it factual, professional, max 90 characters, no clickbait, no emojis, "
+                f"add context if it fits. Do NOT start with the source name.\n\n"
+                f"Headline: {title}\n"
+                f"Source: {source} | Category: {category}\n\n"
+                f"YouTube title:"
+            )
+            raw = self._meta_gen.run(prompt, max_new_tokens=45)
+            generated = re.sub(r"^(youtube title:?\s*)", "", raw, flags=re.IGNORECASE).strip()
+            generated = _truncate(generated, 90)
+            # Accept only if meaningfully different from the raw headline
+            if len(generated) >= 20 and _similarity_ratio(generated, title) < 0.95:
+                return generated
+        except Exception:
+            pass
+
+        # Fallback: clean up the original headline
+        clean_title = _truncate(title, 90)
+        return clean_title
 
     # ── Description generation ────────────────────────────────────────────────
 
@@ -436,19 +555,31 @@ class LocalMLGenerator:
 
     def _build_hashtags(self, article) -> str:
         """Build a string of YouTube hashtags from category, source, and title words."""
-        tags = [
+        tags = []
+        
+        seo_context = os.environ.get("CHANNEL_SEO_CONTEXT", "")
+        if "most successful tags" in seo_context:
+            import re
+            match = re.search(r'successful tags used across these top videos:\n(.*?)\n', seo_context)
+            if match:
+                top_tags = [t.strip().replace(" ", "") for t in match.group(1).split(",")]
+                for tag in top_tags:
+                    if tag and tag not in tags:
+                        tags.append(f"#{tag}" if not tag.startswith("#") else tag)
+
+        tags.extend([
             f"#{article.category.replace(' ', '')}",
             "#IndiaNews",
             "#BreakingNews",
             "#LatestNews",
             f"#{article.source.replace(' ', '')}",
-        ]
+        ])
         # Add title words as hashtags (capitalized, no special chars)
         for word in article.title.split():
             word = re.sub(r"[^A-Za-z0-9]", "", word)
             if len(word) >= 4:
                 tags.append(f"#{word.capitalize()}")
-            if len(tags) >= 10:
+            if len(tags) >= 20:
                 break
         return " ".join(dict.fromkeys(tags))  # deduplicated, order-preserving
 
@@ -510,10 +641,18 @@ class LocalMLGenerator:
             f"Read more: {article.url}\n\n"
             f"#IndiaNews #BreakingNews #{article.category.capitalize()}"
         )
+        sents = [s.strip() for s in re.split(r'(?<=[.!?])\s+', article.content) if 20 < len(s.strip()) < 200]
+        short_script = _clean(
+            f"Breaking news — {article.title}. "
+            + (sents[0] if sents else '') + ' '
+            + (sents[1] if len(sents) > 1 else '')
+            + f" Follow {os.environ.get('CHANNEL_NAME', 'us')} for more updates."
+        )
         return VideoContent(
             article_id=article.id,
             title=title,
             script=script,
+            short_script=short_script,
             script_segments=_split_into_segments(script),
             description=description,
             tags=tags,

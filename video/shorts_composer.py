@@ -1,6 +1,6 @@
 """
 video/shorts_composer.py
-Generates a 9:16 vertical YouTube Shorts video (≤ 59 seconds).
+Generates a 9:16 vertical YouTube Short (25–35 seconds) for individual news stories.
 
 Layout:
   - Dark gradient background
@@ -28,7 +28,7 @@ except ImportError:
     logger.warning("MoviePy not installed — Shorts composition will be skipped.")
 
 
-SHORTS_MAX_DURATION = 59.0   # YouTube Shorts must be ≤ 59 s
+SHORTS_MAX_DURATION = 59.0   # Individual news shorts: up to 59 s
 
 
 class ShortsComposer:
@@ -75,7 +75,7 @@ class ShortsComposer:
             from io import BytesIO
 
             logger.info(f"Downloading image for Short: {image_url}")
-            resp = requests.get(image_url, timeout=10)
+            resp = requests.get(image_url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
             resp.raise_for_status()
             
             img = Image.open(BytesIO(resp.content)).convert("RGB")
@@ -156,20 +156,16 @@ class ShortsComposer:
         # Overlays
         overlays = []
         overlays += self._make_top_bar(duration)
-        
-        # Adjust vertical positions if we have an image
+
         if fg_path and os.path.exists(fg_path):
-            # Centered image
             fg_clip = ImageClip(fg_path).with_duration(duration).with_position(("center", 480))
             overlays.append(fg_clip)
-            
-            # Draw headline higher up
             overlays += self._make_headline(vc.thumbnail_headline or vc.title, duration, headline_y=200, label_y=120)
-            # Draw subtext lower down
-            overlays += self._make_subtext_positioned(vc.thumbnail_subtext, duration, sub_y=1120)
         else:
             overlays += self._make_headline(vc.thumbnail_headline or vc.title, duration)
-            overlays += self._make_subtext(vc.thumbnail_subtext, duration)
+
+        # Rotating script sentences in the lower-center zone
+        overlays += self._make_script_sentences(vc, duration)
 
         overlays += self._make_source_badge(vc.source_name, duration)
         overlays += self._make_bottom_bar(duration)
@@ -247,16 +243,64 @@ class ShortsComposer:
             ).with_duration(duration).with_position(("center", label_y))
             clips.append(label)
 
-            # Main headline (large, white, bold)
-            wrapped = "\n".join(textwrap.wrap(headline, width=22))
+            # Main headline (large, white, bold with stroke)
+            wrapped = "\n".join(textwrap.wrap(headline, width=28))
             title = TextClip(
-                text=wrapped, font_size=90, color="white",
+                text=wrapped, font_size=65, color="white",
+                stroke_color="black", stroke_width=3,
                 font=self._get_font(True), method="caption",
                 size=(self.W - 80, None), text_align="center",
             ).with_duration(duration).with_position(("center", headline_y))
             clips.append(title)
         except Exception as e:
             logger.warning(f"Shorts headline failed: {e}")
+        return clips
+
+    def _make_script_sentences(self, vc, duration: float) -> list:
+        """
+        Rotate sentences from short_script in the lower-center zone of the Short.
+        Each sentence shows for an equal slice of the total duration.
+        """
+        import re
+        clips = []
+        try:
+            # Use short_script if available, else first 400 chars of full script
+            text = getattr(vc, "short_script", "") or vc.script[:400]
+            raw = re.split(r'(?<=[.!?])\s+', text.strip())
+            sentences = [s.strip() for s in raw if s.strip()]
+            if not sentences:
+                return clips
+
+            n = len(sentences)
+            seg_dur = duration / n
+            panel_y = 1100  # below center in 1920-tall frame
+            panel_h = 360
+
+            # Dark panel
+            clips.append(
+                ColorClip(size=(self.W, panel_h), color=(5, 5, 10))
+                .with_duration(duration).with_position(("center", panel_y))
+            )
+            clips.append(
+                ColorClip(size=(self.W, 4), color=self.ACCENT)
+                .with_duration(duration).with_position(("center", panel_y))
+            )
+
+            for i, sent in enumerate(sentences):
+                t_start = i * seg_dur
+                t_end   = t_start + seg_dur
+                wrapped = "\n".join(textwrap.wrap(sent, width=28))
+                try:
+                    txt = TextClip(
+                        text=wrapped, font_size=60, color="white",
+                        font=self._get_font(True), method="caption",
+                        size=(self.W - 80, None), text_align="center",
+                    ).with_start(t_start).with_end(t_end).with_position(("center", panel_y + 24))
+                    clips.append(txt)
+                except Exception as e:
+                    logger.debug(f"Shorts sentence {i} failed: {e}")
+        except Exception as e:
+            logger.warning(f"Shorts script sentences failed: {e}")
         return clips
 
     def _make_subtext(self, subtext: str, duration: float) -> list:
@@ -305,10 +349,24 @@ class ShortsComposer:
     def _make_shorts_watermark(self, duration: float) -> list:
         clips = []
         try:
+            logo_path = "assets/channel_logo.png"
+            if os.path.exists(logo_path):
+                from PIL import Image
+                logo_resized_path = str(self.output_dir / "temp_logo_48.png")
+                if not os.path.exists(logo_resized_path):
+                    with Image.open(logo_path) as img:
+                        w, h = img.size
+                        new_w = int(w * (48 / h))
+                        img.resize((new_w, 48), Image.Resampling.LANCZOS).save(logo_resized_path, "PNG")
+                
+                logo = ImageClip(logo_resized_path).with_duration(duration)
+                logo = logo.with_position((self.W - 260, self.H - 206))
+                clips.append(logo)
+                
             wm = TextClip(
                 text="#Shorts", font_size=36, color="#888888",
                 font=self._get_font(False), method="label",
-            ).with_duration(duration).with_position((self.W - 200, self.H - 200))
+            ).with_duration(duration).with_position((self.W - 190, self.H - 200))
             clips.append(wm)
         except Exception as e:
             logger.warning(f"Shorts watermark failed: {e}")
