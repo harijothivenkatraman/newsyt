@@ -1070,6 +1070,6 @@ if __name__ == "__main__":
 
     threading.Thread(target=job_loop, daemon=True).start()
 
-    port = int(os.getenv("DASHBOARD_PORT", 5050))
-    logger.info(f"Dashboard running at http://localhost:{port}")
+    port = int(os.getenv("PORT", os.getenv("DASHBOARD_PORT", 5050)))
+    logger.info(f"Dashboard running at http://0.0.0.0:{port}")
     app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
