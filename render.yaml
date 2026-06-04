@@ -1,7 +1,6 @@
 services:
-  # ── 1. Web Dashboard ──────────────────────────────────────────────────────
   - type: web
-    name: newsbot-dashboard
+    name: newsbot
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
@@ -12,41 +11,9 @@ services:
       - key: PORT
         value: "10000"
       - key: CHANNEL_NAME
-        sync: false         # Set in Render dashboard
+        sync: false             # Set in Render dashboard
       - key: GEMINI_API_KEY
-        sync: false         # Set in Render dashboard
-      - key: TTS_ENGINE
-        value: gtts         # Use gtts on server (no binary needed)
-      - key: VOICE_LANGUAGE
-        value: en
-      - key: USE_LOCAL_ML
-        value: "false"      # Use Gemini API on cloud (no 1GB model download)
-      - key: VIDEO_RESOLUTION
-        value: "1280x720"
-      - key: SCRAPE_INTERVAL_MINUTES
-        value: "30"
-      - key: MAX_ARTICLES_PER_RUN
-        value: "3"
-      - key: OUTPUT_DIR
-        value: /tmp/output
-      - key: LOG_DIR
-        value: /tmp/logs
-
-  # ── 2. Background Pipeline Worker (Cron) ──────────────────────────────────
-  - type: cron
-    name: newsbot-pipeline
-    runtime: python
-    plan: free
-    schedule: "*/30 * * * *"    # Every 30 minutes
-    buildCommand: pip install -r requirements.txt
-    startCommand: python pipeline.py --once
-    envVars:
-      - key: PYTHON_VERSION
-        value: "3.11.0"
-      - key: CHANNEL_NAME
-        sync: false
-      - key: GEMINI_API_KEY
-        sync: false
+        sync: false             # Set in Render dashboard
       - key: TTS_ENGINE
         value: gtts
       - key: VOICE_LANGUAGE
@@ -55,6 +22,8 @@ services:
         value: "false"
       - key: VIDEO_RESOLUTION
         value: "1280x720"
+      - key: SCRAPE_INTERVAL_MINUTES
+        value: "30"
       - key: MAX_ARTICLES_PER_RUN
         value: "3"
       - key: OUTPUT_DIR
