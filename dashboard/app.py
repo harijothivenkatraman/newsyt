@@ -36,6 +36,21 @@ def _get_uploader():
         _uploader = YouTubeUploader(channel_name=channel_name)
     return _uploader
 
+
+def _get_redirect_uri() -> str:
+    """Build the OAuth callback URI.
+    Priority:
+      1. DASHBOARD_URL env var  (set this on Render to your exact public URL)
+      2. X-Forwarded-Proto header (detects https behind a reverse proxy)
+      3. request.host_url fallback
+    """
+    base = os.getenv("DASHBOARD_URL", "").rstrip("/")
+    if not base:
+        # Detect real scheme behind Render / nginx proxy
+        scheme = request.headers.get("X-Forwarded-Proto", request.scheme)
+        base = f"{scheme}://{request.host}"
+    return f"{base}/api/auth/callback"
+
 # ── Templates ──────────────────────────────────────────────────────────────────
 
 HTML = """
@@ -740,9 +755,8 @@ def api_auth_login():
     """
     up = _get_uploader()
     try:
-        # Build the redirect URI pointing back to this server
-        base_url = request.host_url.rstrip("/")
-        redirect_uri = f"{base_url}/api/auth/callback"
+        redirect_uri = _get_redirect_uri()
+        logger.info(f"OAuth login — redirect_uri: {redirect_uri}")
         auth_url = up.get_auth_url(redirect_uri=redirect_uri)
         return jsonify({"auth_url": auth_url})
     except Exception as e:
@@ -766,8 +780,7 @@ def api_auth_callback():
 
     up = _get_uploader()
     try:
-        base_url = request.host_url.rstrip("/")
-        redirect_uri = f"{base_url}/api/auth/callback"
+        redirect_uri = _get_redirect_uri()
         success = up.exchange_code(code=code, redirect_uri=redirect_uri)
         if success:
             channel = up.get_channel_info()
