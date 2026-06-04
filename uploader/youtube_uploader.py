@@ -83,6 +83,10 @@ class YouTubeUploader:
     # ── Auth ──────────────────────────────────────────────────────────────────
 
     def authenticate(self) -> bool:
+        """Authenticate using a saved token (refresh if expired).
+        Does NOT open a browser — safe for headless/server environments.
+        For fresh auth (no token), use get_auth_url() + exchange_code().
+        """
         if not GOOGLE_LIBS:
             logger.warning("Google libraries missing — can't authenticate.")
             return False
@@ -94,31 +98,76 @@ class YouTubeUploader:
             with open(self.token_path, "rb") as f:
                 creds = pickle.load(f)
 
-        # Refresh or re-authenticate
+        # Refresh expired token (no browser needed)
         if creds and creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
+                with open(self.token_path, "wb") as f:
+                    pickle.dump(creds, f)
+                logger.success("YouTube token refreshed.")
             except Exception as e:
                 logger.warning(f"Token refresh failed: {e}")
                 creds = None
 
         if not creds or not creds.valid:
-            if not os.path.exists(self.client_secrets_path):
-                logger.error(
-                    f"client_secrets.json not found at {self.client_secrets_path}. "
-                    "Download it from Google Cloud Console."
-                )
-                return False
-            flow = InstalledAppFlow.from_client_secrets_file(
-                self.client_secrets_path, SCOPES
+            logger.error(
+                "No valid YouTube token found. Use get_auth_url() to start "
+                "the OAuth flow and exchange_code() to complete it."
             )
-            creds = flow.run_local_server(port=8080)
-            with open(self.token_path, "wb") as f:
-                pickle.dump(creds, f)
+            return False
 
         self._service = build("youtube", "v3", credentials=creds)
         logger.success("YouTube authenticated!")
         return True
+
+    def get_auth_url(self, redirect_uri: str) -> str:
+        """Return a Google OAuth URL for the user to visit in their browser.
+        Call exchange_code() with the returned code to complete login.
+        """
+        if not GOOGLE_LIBS:
+            raise RuntimeError("Google libraries not installed.")
+        if not os.path.exists(self.client_secrets_path):
+            raise FileNotFoundError(
+                f"client_secrets.json not found at {self.client_secrets_path}."
+            )
+        from google_auth_oauthlib.flow import Flow
+        flow = Flow.from_client_secrets_file(
+            self.client_secrets_path,
+            scopes=SCOPES,
+            redirect_uri=redirect_uri,
+        )
+        auth_url, _ = flow.authorization_url(
+            access_type="offline",
+            include_granted_scopes="true",
+            prompt="consent",
+        )
+        return auth_url
+
+    def exchange_code(self, code: str, redirect_uri: str) -> bool:
+        """Exchange an OAuth authorization code for credentials and save the token.
+        Returns True on success.
+        """
+        if not GOOGLE_LIBS:
+            return False
+        if not os.path.exists(self.client_secrets_path):
+            return False
+        try:
+            from google_auth_oauthlib.flow import Flow
+            flow = Flow.from_client_secrets_file(
+                self.client_secrets_path,
+                scopes=SCOPES,
+                redirect_uri=redirect_uri,
+            )
+            flow.fetch_token(code=code)
+            creds = flow.credentials
+            with open(self.token_path, "wb") as f:
+                pickle.dump(creds, f)
+            self._service = build("youtube", "v3", credentials=creds)
+            logger.success("YouTube OAuth exchange complete — token saved.")
+            return True
+        except Exception as e:
+            logger.error(f"OAuth code exchange failed: {e}")
+            return False
 
     def get_channel_info(self) -> dict:
         """Return info about the currently authenticated YouTube channel."""

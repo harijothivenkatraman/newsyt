@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from flask import Flask, render_template_string, jsonify, request
+from flask import Flask, render_template_string, jsonify, request, redirect
 from loguru import logger
 
 app = Flask(__name__)
@@ -358,15 +358,42 @@ async function refreshAuth(){
 async function loginYT(){
   document.getElementById('modal-login').classList.add('show');
   try{
-    const r=await fetch('/api/auth/login',{method:'POST'});
-    const d=await r.json();
-    closeModal();
-    if(d.success){
-      showSb('Successfully connected to YouTube channel: '+d.channel_name,'o');
-      refreshAuth();
-    }else{
-      showSb('Login failed: '+(d.error||'Unknown error'),'e');
+    // Step 1: Get the Google OAuth URL from the server
+    const r = await fetch('/api/auth/login', {method:'POST'});
+    const d = await r.json();
+    if(!d.auth_url){
+      closeModal();
+      showSb('Login error: '+(d.error||'Could not get auth URL'),'e');
+      return;
     }
+    // Step 2: Open the Google OAuth URL in a popup window
+    const popup = window.open(d.auth_url, 'yt_oauth', 'width=600,height=700,scrollbars=yes');
+    // Step 3: Poll /api/auth/status until authenticated or popup closed
+    const pollAuth = setInterval(async () => {
+      try{
+        if(!popup || popup.closed){
+          clearInterval(pollAuth);
+          closeModal();
+          // Do one final check in case it succeeded before closing
+          const st = await(await fetch('/api/auth/status')).json();
+          if(st.authenticated){
+            showSb('Successfully connected to YouTube channel: '+(st.channel?.title||''),'o');
+            refreshAuth();
+          } else {
+            showSb('Login cancelled or failed.','e');
+          }
+          return;
+        }
+        const st = await(await fetch('/api/auth/status')).json();
+        if(st.authenticated && st.channel){
+          clearInterval(pollAuth);
+          if(popup && !popup.closed) popup.close();
+          closeModal();
+          showSb('Successfully connected to YouTube channel: '+st.channel.title,'o');
+          refreshAuth();
+        }
+      }catch(e){}
+    }, 2000);
   }catch(e){
     closeModal();
     showSb('Login error: '+e,'e');
@@ -708,24 +735,67 @@ def api_auth_status():
 
 @app.route("/api/auth/login", methods=["POST"])
 def api_auth_login():
-    """Trigger YouTube OAuth login flow (opens browser)."""
-    global _uploader
+    """Return a Google OAuth URL for the user to complete in their browser.
+    Headless-safe: does NOT open a browser on the server.
+    """
     up = _get_uploader()
     try:
-        up._service = None
-        success = up.authenticate()
+        # Build the redirect URI pointing back to this server
+        base_url = request.host_url.rstrip("/")
+        redirect_uri = f"{base_url}/api/auth/callback"
+        auth_url = up.get_auth_url(redirect_uri=redirect_uri)
+        return jsonify({"auth_url": auth_url})
+    except Exception as e:
+        logger.error(f"Login (get_auth_url) failed: {e}")
+        return jsonify({"auth_url": None, "error": str(e)})
+
+
+@app.route("/api/auth/callback")
+def api_auth_callback():
+    """Handle the Google OAuth redirect. Exchanges the code for a token,
+    saves it, then closes the popup with a success message.
+    """
+    global _uploader
+    code = request.args.get("code")
+    error = request.args.get("error")
+    if error:
+        logger.error(f"OAuth callback error: {error}")
+        return _oauth_result_page(success=False, message=f"OAuth error: {error}")
+    if not code:
+        return _oauth_result_page(success=False, message="No authorization code received.")
+
+    up = _get_uploader()
+    try:
+        base_url = request.host_url.rstrip("/")
+        redirect_uri = f"{base_url}/api/auth/callback"
+        success = up.exchange_code(code=code, redirect_uri=redirect_uri)
         if success:
             channel = up.get_channel_info()
-            return jsonify({
-                "success": True,
-                "channel_name": channel.get("title", "Unknown"),
-                "channel": channel,
-            })
+            name = channel.get("title", "Unknown")
+            logger.success(f"YouTube OAuth complete — channel: {name}")
+            return _oauth_result_page(success=True, message=f"Connected to: {name}")
         else:
-            return jsonify({"success": False, "error": "Authentication failed"})
+            return _oauth_result_page(success=False, message="Token exchange failed.")
     except Exception as e:
-        logger.error(f"Login failed: {e}")
-        return jsonify({"success": False, "error": str(e)})
+        logger.error(f"OAuth callback exchange failed: {e}")
+        return _oauth_result_page(success=False, message=str(e))
+
+
+def _oauth_result_page(success: bool, message: str) -> str:
+    """Return a tiny HTML page that closes the popup and signals the parent."""
+    icon = "✅" if success else "❌"
+    color = "#22c55e" if success else "#ef4444"
+    return f"""<!DOCTYPE html>
+<html><head><title>YouTube Auth</title>
+<style>body{{font-family:sans-serif;display:flex;align-items:center;justify-content:center;
+  height:100vh;margin:0;background:#111;color:#fff;}}
+  .box{{text-align:center;padding:2rem;}}
+  h2{{color:{color};}}</style></head>
+<body><div class="box">
+  <h2>{icon} {message}</h2>
+  <p>You can close this window.</p>
+  <script>setTimeout(()=>window.close(),2000);</script>
+</div></body></html>"""
 
 
 @app.route("/api/auth/logout", methods=["POST"])
