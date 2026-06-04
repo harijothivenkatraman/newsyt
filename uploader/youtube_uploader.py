@@ -120,9 +120,13 @@ class YouTubeUploader:
         logger.success("YouTube authenticated!")
         return True
 
+    # Shared across all instances: state -> Flow (holds PKCE code_verifier)
+    _pending_flows: dict = {}
+
     def get_auth_url(self, redirect_uri: str) -> str:
         """Return a Google OAuth URL for the user to visit in their browser.
-        Call exchange_code() with the returned code to complete login.
+        Stores the Flow object so exchange_code_by_state() can reuse it,
+        preserving the PKCE code_verifier across the two HTTP requests.
         """
         if not GOOGLE_LIBS:
             raise RuntimeError("Google libraries not installed.")
@@ -136,17 +140,39 @@ class YouTubeUploader:
             scopes=SCOPES,
             redirect_uri=redirect_uri,
         )
-        auth_url, _ = flow.authorization_url(
+        auth_url, state = flow.authorization_url(
             access_type="offline",
             include_granted_scopes="true",
             prompt="consent",
         )
+        _pending_flows[state] = flow          # keep the flow alive for the callback
+        logger.debug(f"OAuth flow stored for state={state[:8]}…")
         return auth_url
 
-    def exchange_code(self, code: str, redirect_uri: str) -> bool:
-        """Exchange an OAuth authorization code for credentials and save the token.
+    def exchange_code_by_state(self, state: str, code: str) -> bool:
+        """Exchange an OAuth code for credentials using the stored Flow object.
+        The stored flow already contains the PKCE code_verifier, so Google
+        accepts the token exchange without 'Missing code verifier'.
         Returns True on success.
         """
+        flow = _pending_flows.pop(state, None)
+        if flow is None:
+            logger.error(f"OAuth exchange failed: no pending flow for state={state[:8]}…")
+            return False
+        try:
+            flow.fetch_token(code=code)
+            creds = flow.credentials
+            with open(self.token_path, "wb") as f:
+                pickle.dump(creds, f)
+            self._service = build("youtube", "v3", credentials=creds)
+            logger.success("YouTube OAuth exchange complete — token saved.")
+            return True
+        except Exception as e:
+            logger.error(f"OAuth code exchange failed: {e}")
+            return False
+
+    def exchange_code(self, code: str, redirect_uri: str) -> bool:
+        """Legacy: exchange a code without PKCE (kept for compatibility)."""
         if not GOOGLE_LIBS:
             return False
         if not os.path.exists(self.client_secrets_path):

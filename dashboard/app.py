@@ -770,18 +770,20 @@ def api_auth_callback():
     saves it, then closes the popup with a success message.
     """
     global _uploader
-    code = request.args.get("code")
+    code  = request.args.get("code")
+    state = request.args.get("state")
     error = request.args.get("error")
     if error:
         logger.error(f"OAuth callback error: {error}")
         return _oauth_result_page(success=False, message=f"OAuth error: {error}")
     if not code:
         return _oauth_result_page(success=False, message="No authorization code received.")
+    if not state:
+        return _oauth_result_page(success=False, message="Missing OAuth state parameter.")
 
     up = _get_uploader()
     try:
-        redirect_uri = _get_redirect_uri()
-        success = up.exchange_code(code=code, redirect_uri=redirect_uri)
+        success = up.exchange_code_by_state(state=state, code=code)
         if success:
             channel = up.get_channel_info()
             name = channel.get("title", "Unknown")
