@@ -56,7 +56,6 @@ rich>=13.0.0
 loguru>=0.7.0
 httpx>=0.25.0
 flask>=3.0.0
-click>=8.2.0
 kokoro-onnx>=0.5.0
 soundfile>=0.13.1
 huggingface_hub>=0.23.0
