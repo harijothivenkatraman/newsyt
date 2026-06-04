@@ -145,7 +145,7 @@ class YouTubeUploader:
             include_granted_scopes="true",
             prompt="consent",
         )
-        _pending_flows[state] = flow          # keep the flow alive for the callback
+        YouTubeUploader._pending_flows[state] = flow   # keep alive for callback
         logger.debug(f"OAuth flow stored for state={state[:8]}…")
         return auth_url
 
@@ -155,7 +155,7 @@ class YouTubeUploader:
         accepts the token exchange without 'Missing code verifier'.
         Returns True on success.
         """
-        flow = _pending_flows.pop(state, None)
+        flow = YouTubeUploader._pending_flows.pop(state, None)
         if flow is None:
             logger.error(f"OAuth exchange failed: no pending flow for state={state[:8]}…")
             return False
