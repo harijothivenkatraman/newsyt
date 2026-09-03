@@ -21,7 +21,8 @@ import os
 import sys
 import json
 import time
-from datetime import datetime
+import hashlib
+from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass, field, asdict
@@ -45,6 +46,10 @@ from video.shorts_composer import ShortsComposer
 from video.bundle_shorts_composer import BundleShortsComposer
 from uploader.youtube_uploader import YouTubeUploader
 from article_ranker import ArticleRanker
+from trending_topics import get_trending_topics
+from trending_filter import TrendingFilter
+from sources.api_sources import fetch_all_api_sources
+from scheduler.peak_times import schedule_mode, next_peak_slot, format_slot
 import article_queue as queue
 
 console = Console()
@@ -175,19 +180,72 @@ class NewsPipeline:
 
     def scrape_and_enqueue(self) -> int:
         """
-        Scrape all sources and add new articles to the persistent queue.
-        Does NOT process anything — just fills the queue.
+        1. Fetch what's trending on YouTube India right now.
+        2. Scrape all RSS feeds.
+        3. Score & filter articles by relevance to trending topics.
+        4. Enqueue only the relevant articles.
         Returns number of articles enqueued.
         """
-        console.rule("[bold red]YouTube News Bot — Scraping & Enqueueing")
-        console.print("\n[cyan]Scraping news sources...[/]")
-        articles = self.aggregator.fetch_all(max_per_source=3)
+        console.rule("[bold red]YouTube News Bot — Trending-Driven Scrape & Enqueue")
+
+        # ── Step 1: Get trending topics ───────────────────────────────────────
+        console.print("\n[cyan]Fetching trending topics from YouTube...[/]")
+        try:
+            topics = get_trending_topics(self.uploader)
+        except Exception as e:
+            logger.warning(f"Trending fetch failed: {e} — scraping without filter")
+            topics = []
+
+        if topics:
+            console.print(
+                f"[green]Trending topics ({len(topics)}):[/] "
+                + ", ".join(f"[yellow]{t}[/]" for t in topics[:10])
+                + (f" [dim]+{len(topics)-10} more[/]" if len(topics) > 10 else "")
+            )
+        else:
+            console.print("[yellow]No trending topics found — will enqueue top scored articles.[/]")
+
+        # ── Step 2: Scrape RSS + fetch API sources ────────────────────────────────
+        console.print("\n[cyan]Scraping news sources + fetching live API data...[/]")
+        rss_articles = self.aggregator.fetch_all(max_per_source=3)
+
+        # Fetch from free public APIs (crypto, sports, finance, tech, etc.)
+        console.print("[cyan]Fetching live data from public APIs...[/]")
+        try:
+            api_articles = fetch_all_api_sources(max_total=20)
+            console.print(f"[dim]  API sources: {len(api_articles)} articles[/]")
+        except Exception as e:
+            logger.warning(f"API sources fetch failed: {e}")
+            api_articles = []
+
+        articles = rss_articles + api_articles
 
         if not articles:
             console.print("[yellow]No new articles found.[/]")
             return 0
 
-        articles = articles[: self.max_articles]
+        console.print(
+            f"[dim]Total: {len(rss_articles)} RSS + {len(api_articles)} API = "
+            f"{len(articles)} raw articles[/]"
+        )
+
+        # ── Step 3: Filter by trending relevance ──────────────────────────────
+        if topics:
+            tf = TrendingFilter(topics)
+            articles = tf.filter_articles(
+                articles,
+                threshold=0.35,
+                top_n=self.max_articles,
+                min_articles=8,
+            )
+            console.print(
+                f"[green]After trend filter: {len(articles)} relevant articles[/] "
+                f"[dim](threshold 0.35)[/]"
+            )
+        else:
+            articles = articles[: self.max_articles]
+
+        # ── Step 4: Enqueue ───────────────────────────────────────────────────
         added = queue.enqueue_batch(articles)
         stats = queue.queue_stats()
         console.print(
@@ -234,6 +292,136 @@ class NewsPipeline:
             logger.info("Queue empty — nothing to drip-publish.")
             return None
         return self.process_one(dry_run=dry_run)
+
+    # ── Trending topic video ──────────────────────────────────────────────────
+
+    _TRENDING_LOG_PATH = Path("./logs/trending_video_log.json")
+
+    def _load_trending_done_today(self) -> set:
+        """Return the set of trending topics already processed today."""
+        try:
+            if not self._TRENDING_LOG_PATH.exists():
+                return set()
+            data = json.loads(self._TRENDING_LOG_PATH.read_text(encoding="utf-8"))
+            if data.get("date") != date.today().isoformat():
+                return set()  # stale — new day
+            return set(data.get("topics", []))
+        except Exception as e:
+            logger.debug(f"[Trending] Could not load daily log: {e}")
+            return set()
+
+    def _save_trending_done(self, topics_done: set) -> None:
+        """Persist today's processed trending topics."""
+        try:
+            self._TRENDING_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            self._TRENDING_LOG_PATH.write_text(
+                json.dumps(
+                    {"date": date.today().isoformat(), "topics": sorted(topics_done)},
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        except Exception as e:
+            logger.debug(f"[Trending] Could not save daily log: {e}")
+
+    def _make_trending_article(self, topic: str):
+        """
+        Build a synthetic NewsArticle from a trending topic string.
+        The article has enough content for the AI generator to produce
+        a compelling Short script about this trending subject.
+        """
+        from scraper.news_scraper import NewsArticle
+
+        unique_id = hashlib.md5(f"trending::{topic}::{date.today().isoformat()}".encode()).hexdigest()[:12]
+        content = (
+            f"{topic} is currently one of the most trending topics globally. "
+            f"This topic is capturing widespread attention across social media, YouTube, "
+            f"and news platforms. Here is what people need to know about '{topic}': "
+            f"It has emerged as a major conversation point today, drawing significant "
+            f"public interest and engagement worldwide. Audiences are actively searching "
+            f"for the latest updates, expert analysis, and breaking developments related "
+            f"to this subject. Stay informed with the most recent news and insights on "
+            f"'{topic}' as this story continues to develop."
+        )
+        return NewsArticle(
+            id=unique_id,
+            title=f"Trending Now: {topic}",
+            content=content,
+            summary=content[:300],
+            url=f"https://trends.google.com/trending?geo=IN&q={topic.replace(' ', '+')}",
+            source="Trending Topics",
+            author="News Desk",
+            published_at=datetime.now().isoformat(),
+            category="trending",
+            image_url="",
+        )
+
+    def run_trending_topic_video(self, dry_run: bool = False) -> Optional[PipelineResult]:
+        """
+        Guarantee at least one video is generated for a trending topic each cycle.
+
+        Flow
+        ────
+        1. Fetch current trending topics (uses cache if fresh).
+        2. Skip topics already processed today.
+        3. Build a synthetic NewsArticle for the top uncovered topic.
+        4. Run the full _process_article() pipeline (AI gen → TTS → Short → upload).
+        5. Upload follows the same peak-time scheduling logic as regular articles.
+
+        Returns PipelineResult or None if all topics are covered or topics empty.
+        """
+        console.rule("[bold magenta]Trending Topic Video — Guaranteed Coverage")
+
+        # 1. Fetch topics (respects 30-min cache)
+        try:
+            topics = get_trending_topics(self.uploader)
+        except Exception as e:
+            logger.warning(f"[Trending] Topic fetch failed: {e}")
+            topics = []
+
+        if not topics:
+            console.print("[yellow]No trending topics available — skipping trending video.[/]")
+            return None
+
+        # 2. Skip already-processed topics today
+        done_today = self._load_trending_done_today()
+        remaining = [t for t in topics if t.lower() not in {d.lower() for d in done_today}]
+
+        if not remaining:
+            console.print(
+                f"[yellow]All {len(topics)} trending topics already covered today — skipping.[/]"
+            )
+            return None
+
+        topic = remaining[0]
+        console.print(
+            f"[cyan]Generating trending topic video for:[/] [bold yellow]{topic}[/] "
+            f"[dim]({len(done_today)} covered today, {len(remaining)-1} remaining)[/]"
+        )
+
+        # 3. Build synthetic article
+        article = self._make_trending_article(topic)
+
+        # 4. Run through the exact same pipeline
+        result = self._process_article(article, dry_run=dry_run)
+        self._save_result(result)
+
+        # 5. Mark topic as done regardless of success/failure (avoid infinite retries)
+        done_today.add(topic)
+        self._save_trending_done(done_today)
+
+        if result.status == "success":
+            console.print(
+                f"  [green]Trending video OK:[/] {result.shorts_url or 'uploaded'} "
+                f"[dim]topic: {topic}[/]"
+            )
+        else:
+            console.print(
+                f"  [red]Trending video failed:[/] {result.error} [dim]topic: {topic}[/]"
+            )
+
+        return result
 
     # ── Legacy one-shot run (dashboard "Run Now" button) ─────────────────────
 
@@ -339,27 +527,56 @@ class NewsPipeline:
                 return result
 
             if dry_run:
-                console.print("  [yellow]DRY RUN — skipping upload.[/]")
+                console.print("  [yellow]DRY RUN -- skipping upload.[/]")
                 result.status = "success"
                 result.shorts_url = "DRY_RUN"
             else:
-                # 5. Upload Short immediately
-                console.print(f"[cyan]  -> Uploading Short to YouTube...")
-                short_upload = self.uploader.upload_short(short_path, vc, self.privacy)
-                if short_upload.success:
-                    result.shorts_url = short_upload.video_url
-                    result.status = "success"
-                    console.print(f"  [green]OK Short:[/] {short_upload.video_url}")
-                elif short_upload.quota_exceeded:
-                    result.shorts_url = "QUOTA_EXCEEDED"
-                    result.status = "success"   # article processing itself succeeded
-                    if short_path in temp_files:
-                        temp_files.remove(short_path)
-                    console.print(f"  [yellow]Quota exceeded — Short saved to retry queue.[/]")
+                # 5. Upload Short -- immediately OR at next global peak time
+                mode = schedule_mode()
+                if mode == "peak":
+                    publish_at = next_peak_slot()
+                    console.print(
+                        f"[cyan]  -> Scheduling Short to peak slot: "
+                        f"{format_slot(publish_at)}[/]"
+                    )
+                    short_upload = self.uploader.upload_short_scheduled(
+                        short_path, vc, publish_at
+                    )
+                    if short_upload.success:
+                        result.shorts_url = short_upload.video_url
+                        result.status = "success"
+                        console.print(
+                            f"  [green]OK Scheduled Short:[/] {short_upload.video_url} "
+                            f"[dim]-> publishes {format_slot(publish_at)}[/]"
+                        )
+                    elif short_upload.quota_exceeded:
+                        result.shorts_url = "QUOTA_EXCEEDED"
+                        result.status = "success"
+                        if short_path in temp_files:
+                            temp_files.remove(short_path)
+                        console.print("  [yellow]Quota exceeded -- Short saved to retry queue.[/]")
+                    else:
+                        result.error = short_upload.error
+                        result.status = "failed"
+                        console.print(f"  [red]Scheduled upload failed: {short_upload.error}[/]")
                 else:
-                    result.error = short_upload.error
-                    result.status = "failed"
-                    console.print(f"  [red]Short upload failed: {short_upload.error}[/]")
+                    console.print(f"[cyan]  -> Uploading Short to YouTube immediately...[/]")
+                    short_upload = self.uploader.upload_short(short_path, vc, self.privacy)
+                    if short_upload.success:
+                        result.shorts_url = short_upload.video_url
+                        result.status = "success"
+                        console.print(f"  [green]OK Short:[/] {short_upload.video_url}")
+                    elif short_upload.quota_exceeded:
+                        result.shorts_url = "QUOTA_EXCEEDED"
+                        result.status = "success"
+                        if short_path in temp_files:
+                            temp_files.remove(short_path)
+                        console.print("  [yellow]Quota exceeded -- Short saved to retry queue.[/]")
+                    else:
+                        result.error = short_upload.error
+                        result.status = "failed"
+                        console.print(f"  [red]Short upload failed: {short_upload.error}[/]")
+
 
         except Exception as e:
             result.error = str(e)
@@ -588,21 +805,24 @@ class NewsPipeline:
 def run_drip_scheduler():
     """
     Separate scheduler mode:
-      - Every SCRAPE_INTERVAL_MINUTES  → scrape + enqueue new articles
-      - Every PUBLISH_INTERVAL_MINUTES → pop + process ONE article from queue (individual Short)
-      - Daily at 8:00 AM IST and 6:00 PM IST → generate + schedule daily Top-30 bundle
-      - Every Sunday at 10:00 AM IST     → generate + schedule weekly Top-100 bundle
+      - Every SCRAPE_INTERVAL_MINUTES     → scrape + enqueue new articles
+      - Every PUBLISH_INTERVAL_MINUTES    → pop + process ONE article from queue (individual Short)
+      - Every TRENDING_VIDEO_INTERVAL_MINUTES → generate at least one Short for a trending topic
+      - Daily at 8:00 AM IST and 6:00 PM IST  → generate + schedule daily Top-30 bundle
+      - Every Sunday at 10:00 AM IST          → generate + schedule weekly Top-100 bundle
 
     Example env:
       SCRAPE_INTERVAL_MINUTES=120
       PUBLISH_INTERVAL_MINUTES=15
+      TRENDING_VIDEO_INTERVAL_MINUTES=60
       DAILY_BUNDLE_TIMES=08:00,18:00
       WEEKLY_BUNDLE_TIME=10:00
     """
     import schedule
 
-    scrape_interval  = int(os.getenv("SCRAPE_INTERVAL_MINUTES",  "120"))
-    publish_interval = int(os.getenv("PUBLISH_INTERVAL_MINUTES", "15"))
+    scrape_interval   = int(os.getenv("SCRAPE_INTERVAL_MINUTES",          "120"))
+    publish_interval  = int(os.getenv("PUBLISH_INTERVAL_MINUTES",         "15"))
+    trending_interval = int(os.getenv("TRENDING_VIDEO_INTERVAL_MINUTES",  "60"))
 
     # Daily bundle IST times — default 08:00 and 18:00
     daily_times_str = os.getenv("DAILY_BUNDLE_TIMES", "08:00,18:00")
@@ -620,6 +840,19 @@ def run_drip_scheduler():
 
     def publish_job():
         pipeline.run_drip()
+
+    def trending_video_job():
+        """Generate at least one Short for the top uncovered trending topic."""
+        logger.info("Trending video job triggered — generating topic video...")
+        try:
+            result = pipeline.run_trending_topic_video()
+            if result:
+                logger.info(
+                    f"Trending video job done: status={result.status} "
+                    f"url={result.shorts_url or '—'}"
+                )
+        except Exception as e:
+            logger.error(f"Trending video job failed: {e}")
 
     def daily_bundle_job():
         logger.info("Daily bundle job triggered.")
@@ -641,10 +874,16 @@ def run_drip_scheduler():
     scrape_job()
     schedule.every(scrape_interval).minutes.do(scrape_job)
 
-    # Drip-publish individual Shorts
+    # Drip-publish individual Shorts from queue
     if queue.queue_depth() > 0:
         pipeline.run_drip()
     schedule.every(publish_interval).minutes.do(publish_job)
+
+    # Trending topic video — fire immediately then on interval
+    # This guarantees at least one trending video per interval regardless of queue state.
+    trending_video_job()
+    schedule.every(trending_interval).minutes.do(trending_video_job)
+    logger.info(f"Trending topic video scheduled every {trending_interval} min.")
 
     # Daily bundle at IST peak times
     for time_str in daily_times_ist:
@@ -659,6 +898,7 @@ def run_drip_scheduler():
         f"Drip scheduler started — "
         f"scrape every {scrape_interval} min, "
         f"individual Shorts every {publish_interval} min, "
+        f"trending topic video every {trending_interval} min, "
         f"daily bundles at {daily_times_ist}, "
         f"weekly bundle Sundays at {weekly_time_ist}. "
         f"Queue depth: {queue.queue_depth()}"
@@ -693,13 +933,14 @@ def run_scheduler():
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="YouTube News Bot Pipeline (Shorts-only)")
-    parser.add_argument("--dry-run",       action="store_true", help="Skip upload to YouTube")
-    parser.add_argument("--schedule",      action="store_true", help="Legacy: run on fixed interval")
-    parser.add_argument("--drip",          action="store_true", help="Drip scheduler (recommended)")
-    parser.add_argument("--enqueue",       action="store_true", help="Scrape and enqueue only")
-    parser.add_argument("--once",          action="store_true", help="Run once and exit")
-    parser.add_argument("--bundle-daily",  action="store_true", help="Generate + schedule daily Top-30 bundle")
-    parser.add_argument("--bundle-weekly", action="store_true", help="Generate + schedule weekly Top-100 bundle")
+    parser.add_argument("--dry-run",        action="store_true", help="Skip upload to YouTube")
+    parser.add_argument("--schedule",       action="store_true", help="Legacy: run on fixed interval")
+    parser.add_argument("--drip",           action="store_true", help="Drip scheduler (recommended)")
+    parser.add_argument("--enqueue",        action="store_true", help="Scrape and enqueue only")
+    parser.add_argument("--once",           action="store_true", help="Run once and exit")
+    parser.add_argument("--bundle-daily",   action="store_true", help="Generate + schedule daily Top-30 bundle")
+    parser.add_argument("--bundle-weekly",  action="store_true", help="Generate + schedule weekly Top-100 bundle")
+    parser.add_argument("--trending-video", action="store_true", help="Generate one Short for the top trending topic")
     args = parser.parse_args()
 
     if args.drip:
@@ -717,6 +958,13 @@ if __name__ == "__main__":
         p = NewsPipeline()
         urls = p.run_weekly_bundle(dry_run=args.dry_run)
         console.print(f"Weekly bundle: {len(urls)} parts processed.")
+    elif args.trending_video:
+        p = NewsPipeline()
+        result = p.run_trending_topic_video(dry_run=args.dry_run)
+        if result:
+            console.print(f"Trending video: {result.status} — {result.shorts_url or result.error}")
+        else:
+            console.print("[yellow]Trending video: nothing generated.[/]")
     else:
         p = NewsPipeline()
         p.run(dry_run=args.dry_run)

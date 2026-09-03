@@ -36,6 +36,16 @@ except ImportError:
     MOVIEPY_AVAILABLE = False
     logger.warning("MoviePy not installed — BundleShortsComposer will be disabled.")
 
+try:
+    from video.animation_engine import (
+        pulse_bar, particle_overlay, animated_badge,
+        segment_progress_bar, zoom_scale_clip,
+    )
+    BUNDLE_ANIMATION_OK = True
+except Exception as _bae:
+    logger.warning(f"Bundle animation_engine not available: {_bae}")
+    BUNDLE_ANIMATION_OK = False
+
 
 # Timing constants
 INTRO_DURATION   = 3.0   # seconds
@@ -262,6 +272,17 @@ class BundleShortsComposer:
         except Exception:
             pass
 
+        # Animated particles on intro
+        if BUNDLE_ANIMATION_OK:
+            try:
+                p = particle_overlay(
+                    duration=dur, W=W, H=H, fps=FPS,
+                    n_particles=35, color=ACCENT, seed=7,
+                )
+                clips.append(p)
+            except Exception:
+                pass
+
         return CompositeVideoClip(clips, size=(W, H)).with_duration(dur)
 
     # ── News slot ─────────────────────────────────────────────────────────────
@@ -279,6 +300,12 @@ class BundleShortsComposer:
         # Background
         if bg_path and os.path.exists(bg_path):
             bg = ImageClip(bg_path).with_duration(duration)
+            # Ken-Burns slow zoom on bundle slot background
+            if BUNDLE_ANIMATION_OK:
+                try:
+                    bg = zoom_scale_clip(bg, zoom_start=1.0, zoom_end=1.05)
+                except Exception:
+                    pass
         else:
             bg = self._make_gradient_bg(duration)
 
@@ -329,18 +356,64 @@ class BundleShortsComposer:
         except Exception as e:
             logger.debug(f"Bundle title text failed for rank {rank}: {e}")
 
-        # Source badge (bottom-left)
+        # Source badge (animated or static)
         if source:
+            if BUNDLE_ANIMATION_OK:
+                try:
+                    badge = animated_badge(
+                        label=source,
+                        duration=duration,
+                        x_final=40,
+                        y_pos=H - 240,
+                        badge_h=56,
+                        font_size=30,
+                        bg_color=ACCENT,
+                        fps=FPS,
+                        delay=0.3,
+                    )
+                    clips.append(badge)
+                except Exception:
+                    # Fallback to static
+                    try:
+                        badge = ColorClip(size=(min(400, len(source) * 16 + 40), 56), color=ACCENT) \
+                            .with_duration(duration).with_position((40, H - 240))
+                        clips.append(badge)
+                        clips.append(
+                            TextClip(
+                                text=f"  {source.upper()}  ", font_size=32, color="white",
+                                font=self._font(True), method="label",
+                            ).with_duration(duration).with_position((40, H - 236))
+                        )
+                    except Exception:
+                        pass
+            else:
+                try:
+                    badge = ColorClip(size=(min(400, len(source) * 16 + 40), 56), color=ACCENT) \
+                        .with_duration(duration).with_position((40, H - 240))
+                    clips.append(badge)
+                    clips.append(
+                        TextClip(
+                            text=f"  {source.upper()}  ", font_size=32, color="white",
+                            font=self._font(True), method="label",
+                        ).with_duration(duration).with_position((40, H - 236))
+                    )
+                except Exception:
+                    pass
+
+        # Segment progress bar (fills over slot duration)
+        if BUNDLE_ANIMATION_OK:
             try:
-                badge = ColorClip(size=(min(400, len(source) * 16 + 40), 56), color=ACCENT) \
-                    .with_duration(duration).with_position((40, H - 240))
-                clips.append(badge)
-                clips.append(
-                    TextClip(
-                        text=f"  {source.upper()}  ", font_size=32, color="white",
-                        font=self._font(True), method="label",
-                    ).with_duration(duration).with_position((40, H - 236))
+                prog = segment_progress_bar(
+                    duration=duration,
+                    W=W,
+                    bar_h=6,
+                    fps=FPS,
+                    fill_color=ACCENT,
+                    bg_color=(60, 10, 10),
+                    y_pos=H - 20,
+                    glow=True,
                 )
+                clips.append(prog)
             except Exception:
                 pass
 
@@ -403,6 +476,17 @@ class BundleShortsComposer:
         except Exception as e:
             logger.warning(f"Bundle outro text failed: {e}")
 
+        # Animated particles on outro
+        if BUNDLE_ANIMATION_OK:
+            try:
+                p = particle_overlay(
+                    duration=dur, W=W, H=H, fps=FPS,
+                    n_particles=25, color=ACCENT, seed=99,
+                )
+                clips.append(p)
+            except Exception:
+                pass
+
         return CompositeVideoClip(clips, size=(W, H)).with_duration(dur)
 
     # ── Visual helpers ────────────────────────────────────────────────────────
@@ -417,6 +501,17 @@ class BundleShortsComposer:
         return ImageClip(frame).with_duration(duration)
 
     def _accent_bars(self, duration: float) -> list:
+        """Animated pulse bars for top and bottom; falls back to static on failure."""
+        if BUNDLE_ANIMATION_OK:
+            try:
+                top = pulse_bar(duration, W=W, bar_h=12, color=ACCENT,
+                                y_pos=0, fps=FPS, pulse_hz=1.0)
+                bot = pulse_bar(duration, W=W, bar_h=12, color=ACCENT,
+                                y_pos=H - 12, fps=FPS, pulse_hz=1.0)
+                return [top, bot]
+            except Exception:
+                pass
+        # Static fallback
         top = ColorClip(size=(W, 12), color=ACCENT) \
             .with_duration(duration).with_position(("center", 0))
         bot = ColorClip(size=(W, 12), color=ACCENT) \

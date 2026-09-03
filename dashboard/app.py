@@ -219,6 +219,35 @@ HTML = """
     <div class="stat blue"><div class="n" id="s-sources">5</div><div class="l">News Sources</div></div>
   </div>
 
+  <div class="panel" id="trending-panel" style="margin-bottom:12px">
+    <div class="ptitle"><span class="dot" style="background:#e91e63"></span>&#128293; Trending Now <span style="font-size:.7rem;font-weight:400;color:var(--muted)" id="trending-source"></span></div>
+    <div id="trending-tags" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;min-height:28px">
+      <span style="color:var(--muted);font-size:.8rem">Loading trending topics...</span>
+    </div>
+    <p style="color:var(--muted);font-size:.71rem;margin-top:8px">Articles matching these topics are prioritised for upload. Refreshes every 30 min from YouTube &amp; Google Trends.</p>
+  </div>
+
+  <div class="panel" id="apisrc-panel" style="margin-bottom:12px">
+    <div class="ptitle"><span class="dot" style="background:#00bcd4"></span>&#127760; Live API Sources <span style="font-size:.7rem;font-weight:400;color:var(--muted)">(fetched every scrape run)</span></div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">
+      <span style="background:#1a237e22;border:1px solid #3949ab55;color:#7986cb;padding:3px 10px;border-radius:12px;font-size:.74rem;font-weight:600" title="No API key needed">&#128188; CoinGecko <span style="opacity:.6">crypto</span></span>
+      <span style="background:#1b5e2022;border:1px solid #43a04755;color:#66bb6a;padding:3px 10px;border-radius:12px;font-size:.74rem;font-weight:600" title="No API key needed">&#9917; TheSportsDB <span style="opacity:.6">sports</span></span>
+      <span style="background:#b71c1c22;border:1px solid #e5393555;color:#ef9a9a;padding:3px 10px;border-radius:12px;font-size:.74rem;font-weight:600" title="No API key needed">&#128176; Frankfurter <span style="opacity:.6">forex</span></span>
+      <span style="background:#33200022;border:1px solid #ff6d0055;color:#ffcc80;padding:3px 10px;border-radius:12px;font-size:.74rem;font-weight:600" title="No API key needed">&#128293; HackerNews <span style="opacity:.6">tech</span></span>
+      <span style="background:#00000022;border:1px solid #ffffff22;color:#b0bec5;padding:3px 10px;border-radius:12px;font-size:.74rem;font-weight:600" title="Free DEMO_KEY from api.nasa.gov">&#128752; NASA APOD <span style="opacity:.6">science</span></span>
+      <span style="background:#00606422;border:1px solid #00838f55;color:#80deea;padding:3px 10px;border-radius:12px;font-size:.74rem;font-weight:600" title="No API key needed">&#127783; Open-Meteo <span style="opacity:.6">weather</span></span>
+      <span style="background:#4a148c22;border:1px solid #7b1fa255;color:#ce93d8;padding:3px 10px;border-radius:12px;font-size:.74rem;font-weight:600" title="No API key needed">&#127758; REST Countries <span style="opacity:.6">world</span></span>
+      <span style="background:#00695c22;border:1px solid #00897b55;color:#80cbc4;padding:3px 10px;border-radius:12px;font-size:.74rem;font-weight:600" title="600 req/day FREE — currentsapi.services/en/register">&#128240; Currents API <span style="opacity:.6">global news &#11088;</span></span>
+      <span style="background:#0d47a122;border:1px solid #1565c055;color:#90caf9;padding:3px 10px;border-radius:12px;font-size:.74rem;font-weight:600" title="100 req/day FREE — thenewsapi.com/register">&#128240; TheNewsAPI <span style="opacity:.6">global news</span></span>
+      <span style="background:#33691e22;border:1px solid #558b2f55;color:#a5d6a7;padding:3px 10px;border-radius:12px;font-size:.74rem;font-weight:600" title="Requires free TMDB_API_KEY">&#127916; TMDB <span style="opacity:.6">movies</span></span>
+      <span style="background:#880e4f22;border:1px solid #c2185b55;color:#f48fb1;padding:3px 10px;border-radius:12px;font-size:.74rem;font-weight:600" title="Requires free NEWS_API_KEY">&#128240; NewsAPI <span style="opacity:.6">global news</span></span>
+    </div>
+    <div style="display:flex;gap:16px;margin-top:10px;font-size:.71rem;color:var(--muted)">
+      <span>&#9679; No key needed &nbsp;&#9675; Free key required &nbsp;&#11088; Best free tier (600 req/day)</span>
+      <span id="api-schedule-mode"></span>
+    </div>
+  </div>
+
   <div class="panel">
     <div class="ptitle"><span class="dot"></span>Pipeline Controls</div>
     <div class="controls">
@@ -675,9 +704,48 @@ async function refreshLogs(){
   }catch(e){console.error(e);}
 }
 
+async function refreshTrending(){
+  try{
+    const d=await(await fetch('/api/trending')).json();
+    const tags=document.getElementById('trending-tags');
+    const src=document.getElementById('trending-source');
+    if(!d.topics||!d.topics.length){
+      tags.innerHTML='<span style="color:var(--muted);font-size:.8rem">No trending topics yet — run Scrape &amp; Enqueue to fetch.</span>';
+      return;
+    }
+    const colours=['#e91e63','#9c27b0','#2196f3','#00bcd4','#4caf50','#ff9800','#f44336','#795548'];
+    tags.innerHTML=d.topics.map((t,i)=>{
+      const c=colours[i%colours.length];
+      return `<span style="background:${c}22;border:1px solid ${c}55;color:${c};padding:3px 10px;border-radius:12px;font-size:.75rem;font-weight:600">${t}</span>`;
+    }).join('');
+    if(src && d.source) src.textContent='via '+d.source;
+  }catch(e){console.error(e);}
+}
+
+async function refreshSources(){
+  try{
+    const d=await(await fetch('/api/sources')).json();
+    const el=document.getElementById('api-schedule-mode');
+    if(el){
+      const mode=d.schedule_mode||'immediate';
+      const modeColor=mode==='peak'?'#4caf50':'#ff9800';
+      let txt=`<span style="color:${modeColor};font-weight:600">&#128197; Upload: ${mode.toUpperCase()}</span>`;
+      if(mode==='peak'&&d.next_peak_slot){
+        txt+=` &nbsp;<span style="color:var(--muted)">Next: ${d.next_peak_slot}</span>`;
+      }
+      if(d.trend_regions&&d.trend_regions.length){
+        txt+=` &nbsp;<span style="color:#00bcd4">&#127760; Regions: ${d.trend_regions.join(', ')}</span>`;
+      }
+      el.innerHTML=txt;
+    }
+  }catch(e){console.error(e);}
+}
+
 function refreshAll(){
   refreshAuth();
   refreshQueue();
+  refreshTrending();
+  refreshSources();
   refreshLogs();
 }
 
@@ -1055,24 +1123,80 @@ def api_bundle_weekly():
     return jsonify({"status": "started", "message": f"{mode_str}Weekly Top-100 bundle started in background."})
 
 
+@app.route("/api/trending")
+def api_trending():
+    """Return the current cached trending topics."""
+    from pathlib import Path as _P
+    cache_path = _P("./logs/trending_cache.json")
+    if cache_path.exists():
+        try:
+            data = json.loads(cache_path.read_text(encoding="utf-8"))
+            return jsonify({
+                "topics":     data.get("topics", []),
+                "source":     data.get("source", "unknown"),
+                "fetched_at": data.get("fetched_at", ""),
+            })
+        except Exception as e:
+            return jsonify({"topics": [], "source": "error", "error": str(e)})
+    return jsonify({"topics": [], "source": "none"})
+
+
+@app.route("/api/sources")
+def api_sources():
+    """Return API sources config and current schedule mode."""
+    import os
+    schedule = os.getenv("UPLOAD_SCHEDULE", "immediate").strip().lower()
+    regions  = os.getenv("TREND_REGIONS", "IN,US,GB,AU,CA").strip()
+
+    sources = [
+        {"name": "CoinGecko",      "category": "crypto",      "key": False,  "enabled": os.getenv("ENABLE_COINGECKO", "true").lower() == "true"},
+        {"name": "TheSportsDB",    "category": "sports",      "key": False,  "enabled": os.getenv("ENABLE_THESPORTSDB", "true").lower() == "true"},
+        {"name": "Frankfurter",    "category": "forex",       "key": False,  "enabled": os.getenv("ENABLE_FRANKFURTER", "true").lower() == "true"},
+        {"name": "HackerNews",     "category": "tech",        "key": False,  "enabled": os.getenv("ENABLE_HACKERNEWS", "true").lower() == "true"},
+        {"name": "NASA APOD",      "category": "science",     "key": True,   "enabled": os.getenv("ENABLE_NASA_APOD", "true").lower() == "true",   "key_set": bool(os.getenv("NASA_API_KEY"))},
+        {"name": "Open-Meteo",     "category": "weather",     "key": False,  "enabled": os.getenv("ENABLE_OPENMETEO", "true").lower() == "true"},
+        {"name": "REST Countries", "category": "world",       "key": False,  "enabled": os.getenv("ENABLE_RESTCOUNTRIES", "true").lower() == "true"},
+        {"name": "Currents API",   "category": "global news", "key": True,   "enabled": os.getenv("ENABLE_CURRENTSAPI", "true").lower() == "true",  "key_set": bool(os.getenv("CURRENTS_API_KEY")), "note": "600 req/day free"},
+        {"name": "TheNewsAPI",     "category": "global news", "key": True,   "enabled": os.getenv("ENABLE_THENEWSAPI", "true").lower() == "true",   "key_set": bool(os.getenv("THENEWSAPI_KEY")),   "note": "100 req/day free"},
+        {"name": "TMDB",           "category": "movies",      "key": True,   "enabled": os.getenv("ENABLE_TMDB", "true").lower() == "true",        "key_set": bool(os.getenv("TMDB_API_KEY"))},
+        {"name": "NewsAPI",        "category": "global news", "key": True,   "enabled": os.getenv("ENABLE_NEWSAPI", "true").lower() == "true",     "key_set": bool(os.getenv("NEWS_API_KEY"))},
+    ]
+
+    # Compute next peak slot if in peak mode
+    next_slot = None
+    if schedule == "peak":
+        try:
+            from scheduler.peak_times import next_peak_slot, format_slot
+            next_slot = format_slot(next_peak_slot())
+        except Exception:
+            pass
+
+    return jsonify({
+        "schedule_mode": schedule,
+        "next_peak_slot": next_slot,
+        "trend_regions": regions.split(","),
+        "sources": sources,
+    })
+
+
 @app.route("/api/logs")
 def api_logs():
     log_path = Path("./logs/pipeline_log.jsonl")
-    results = []
+    all_results = []
     if log_path.exists():
         lines = log_path.read_text(encoding="utf-8", errors="ignore").strip().splitlines()
-        for line in reversed(lines[-50:]):
+        for line in reversed(lines):          # all lines, newest first
             try:
-                results.append(json.loads(line))
+                all_results.append(json.loads(line))
             except Exception:
                 pass
 
-    total   = len(results)
-    success = sum(1 for r in results if r.get("status") == "success")
-    failed  = sum(1 for r in results if r.get("status") == "failed")
-    shorts  = sum(1 for r in results if r.get("shorts_url") and r.get("shorts_url") not in ("", "DRY_RUN") and r.get("type") != "bundle")
-    bundles = sum(1 for r in results if r.get("type") == "bundle" and r.get("shorts_url") and r.get("shorts_url") not in ("", "DRY_RUN"))
-    last_run = results[0].get("timestamp", "")[:19].replace("T", " ") if results else ""
+    total   = len(all_results)
+    success = sum(1 for r in all_results if r.get("status") == "success")
+    failed  = sum(1 for r in all_results if r.get("status") == "failed")
+    shorts  = sum(1 for r in all_results if r.get("shorts_url") and r.get("shorts_url") not in ("", "DRY_RUN") and r.get("type") != "bundle")
+    bundles = sum(1 for r in all_results if r.get("type") == "bundle" and r.get("shorts_url") and r.get("shorts_url") not in ("", "DRY_RUN"))
+    last_run = all_results[0].get("timestamp", "")[:19].replace("T", " ") if all_results else ""
 
     next_run_str = ""
     if _next_run_time:
@@ -1085,7 +1209,8 @@ def api_logs():
     return jsonify({
         "total": total, "success": success, "failed": failed,
         "shorts": shorts, "bundles": bundles,
-        "last_run": last_run, "next_run": next_run_str, "results": results[:50],
+        "last_run": last_run, "next_run": next_run_str,
+        "results": all_results[:50],   # table shows last 50 only
     })
 
 

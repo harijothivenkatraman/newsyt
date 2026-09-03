@@ -125,11 +125,16 @@ class BaseScraper:
 
 class TheHinduScraper(BaseScraper):
     RSS_FEEDS = {
-        "national":    "https://www.thehindu.com/news/national/feeder/default.rss",
-        "business":    "https://www.thehindu.com/business/feeder/default.rss",
-        "technology":  "https://www.thehindu.com/sci-tech/technology/feeder/default.rss",
-        "sports":      "https://www.thehindu.com/sport/feeder/default.rss",
-        "international":"https://www.thehindu.com/news/international/feeder/default.rss",
+        "national":      "https://www.thehindu.com/news/national/feeder/default.rss",
+        "business":      "https://www.thehindu.com/business/feeder/default.rss",
+        "technology":    "https://www.thehindu.com/sci-tech/technology/feeder/default.rss",
+        "science":       "https://www.thehindu.com/sci-tech/science/feeder/default.rss",
+        "sports":        "https://www.thehindu.com/sport/feeder/default.rss",
+        "cricket":       "https://www.thehindu.com/sport/cricket/feeder/default.rss",
+        "international": "https://www.thehindu.com/news/international/feeder/default.rss",
+        "entertainment": "https://www.thehindu.com/entertainment/feeder/default.rss",
+        "health":        "https://www.thehindu.com/sci-tech/health/feeder/default.rss",
+        "education":     "https://www.thehindu.com/education/feeder/default.rss",
     }
 
     def __init__(self):
@@ -207,11 +212,18 @@ class TheHinduScraper(BaseScraper):
 
 class IndiaTodayScraper(BaseScraper):
     RSS_FEEDS = {
-        "india":       "https://www.indiatoday.in/rss/1206578",
-        "world":       "https://www.indiatoday.in/rss/1206614",
-        "business":    "https://www.indiatoday.in/rss/1206644",
-        "technology":  "https://www.indiatoday.in/rss/1206604",
-        "sports":      "https://www.indiatoday.in/rss/1206590",
+        "india":         "https://www.indiatoday.in/rss/1206578",
+        "world":         "https://www.indiatoday.in/rss/1206614",
+        "business":      "https://www.indiatoday.in/rss/1206644",
+        "technology":    "https://www.indiatoday.in/rss/1206604",
+        "sports":        "https://www.indiatoday.in/rss/1206590",
+        "cricket":       "https://www.indiatoday.in/rss/1206592",
+        "entertainment": "https://www.indiatoday.in/rss/1206579",
+        "movies":        "https://www.indiatoday.in/rss/1206669",
+        "health":        "https://www.indiatoday.in/rss/1206607",
+        "education":     "https://www.indiatoday.in/rss/1206588",
+        "lifestyle":     "https://www.indiatoday.in/rss/1206612",
+        "auto":          "https://www.indiatoday.in/rss/1206603",
     }
 
     def __init__(self):
@@ -289,11 +301,16 @@ class IndiaTodayScraper(BaseScraper):
 
 class NDTVScraper(BaseScraper):
     RSS_FEEDS = {
-        "india":    "https://feeds.feedburner.com/ndtvnews-india-news",
-        "world":    "https://feeds.feedburner.com/ndtvnews-world-news",
-        "business": "https://feeds.feedburner.com/ndtvprofit-latest-news",
-        "sports":   "https://feeds.feedburner.com/ndtvsports-latest",
-        "tech":     "https://feeds.feedburner.com/ndtvnews-tech-media-gadgets",
+        "india":         "https://feeds.feedburner.com/ndtvnews-india-news",
+        "world":         "https://feeds.feedburner.com/ndtvnews-world-news",
+        "business":      "https://feeds.feedburner.com/ndtvprofit-latest-news",
+        "sports":        "https://feeds.feedburner.com/ndtvsports-latest",
+        "cricket":       "https://feeds.feedburner.com/ndtvsports-cricket",
+        "tech":          "https://feeds.feedburner.com/ndtvnews-tech-media-gadgets",
+        "entertainment": "https://feeds.feedburner.com/ndtvmovies-latest",
+        "health":        "https://feeds.feedburner.com/ndtvdoctor-latest",
+        "education":     "https://feeds.feedburner.com/ndtveducation-latest",
+        "auto":          "https://feeds.feedburner.com/ndtvauto-latest",
     }
 
     def __init__(self):
@@ -371,11 +388,20 @@ class NDTVScraper(BaseScraper):
 
 class TimesOfIndiaScraper(BaseScraper):
     RSS_FEEDS = {
-        "top":      "https://timesofindia.indiatimes.com/rssfeedstopstories.cms",
-        "india":    "https://timesofindia.indiatimes.com/rssfeeds/-2128936835.cms",
-        "world":    "https://timesofindia.indiatimes.com/rssfeeds/296589292.cms",
-        "business": "https://timesofindia.indiatimes.com/rssfeeds/1898055.cms",
-        "tech":     "https://timesofindia.indiatimes.com/rssfeeds/66949542.cms",
+        "top":           "https://timesofindia.indiatimes.com/rssfeedstopstories.cms",
+        "india":         "https://timesofindia.indiatimes.com/rssfeeds/-2128936835.cms",
+        "world":         "https://timesofindia.indiatimes.com/rssfeeds/296589292.cms",
+        "business":      "https://timesofindia.indiatimes.com/rssfeeds/1898055.cms",
+        "tech":          "https://timesofindia.indiatimes.com/rssfeeds/66949542.cms",
+        "entertainment": "https://timesofindia.indiatimes.com/rssfeeds/1081479906.cms",
+        "movies":        "https://timesofindia.indiatimes.com/rssfeeds/1081479874.cms",
+        "sports":        "https://timesofindia.indiatimes.com/rssfeeds/4719161.cms",
+        "cricket":       "https://timesofindia.indiatimes.com/rssfeeds/54829575.cms",
+        "science":       "https://timesofindia.indiatimes.com/rssfeeds/2647163.cms",
+        "health":        "https://timesofindia.indiatimes.com/rssfeeds/3908999.cms",
+        "auto":          "https://timesofindia.indiatimes.com/rssfeeds/242781543.cms",
+        "lifestyle":     "https://timesofindia.indiatimes.com/rssfeeds/2886704.cms",
+        "education":     "https://timesofindia.indiatimes.com/rssfeeds/913168846.cms",
     }
 
     def __init__(self):
@@ -452,10 +478,17 @@ class TimesOfIndiaScraper(BaseScraper):
 
 class HindustanTimesScraper(BaseScraper):
     RSS_FEEDS = {
-        "india":    "https://www.hindustantimes.com/rss/india-news/rssfeed.xml",
-        "world":    "https://www.hindustantimes.com/rss/world-news/rssfeed.xml",
-        "business": "https://www.hindustantimes.com/rss/business/rssfeed.xml",
-        "tech":     "https://www.hindustantimes.com/rss/technology/rssfeed.xml",
+        "india":         "https://www.hindustantimes.com/rss/india-news/rssfeed.xml",
+        "world":         "https://www.hindustantimes.com/rss/world-news/rssfeed.xml",
+        "business":      "https://www.hindustantimes.com/rss/business/rssfeed.xml",
+        "tech":          "https://www.hindustantimes.com/rss/technology/rssfeed.xml",
+        "entertainment": "https://www.hindustantimes.com/rss/entertainment/rssfeed.xml",
+        "sports":        "https://www.hindustantimes.com/rss/sports/rssfeed.xml",
+        "cricket":       "https://www.hindustantimes.com/rss/cricket/rssfeed.xml",
+        "lifestyle":     "https://www.hindustantimes.com/rss/lifestyle/rssfeed.xml",
+        "health":        "https://www.hindustantimes.com/rss/health/rssfeed.xml",
+        "auto":          "https://www.hindustantimes.com/rss/auto/rssfeed.xml",
+        "education":     "https://www.hindustantimes.com/rss/education/rssfeed.xml",
     }
 
     def __init__(self):
